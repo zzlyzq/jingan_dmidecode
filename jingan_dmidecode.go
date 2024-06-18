@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"os"
 )
 
 // BIOSInfo struct to hold BIOS information
@@ -146,7 +147,20 @@ type PhysicalDriveInfo struct {
 	Type    string `json:"type"`
 }
 
-// FullSystemInfo struct to hold all information
+type IPMIInfo struct {
+	IP          string       `json:"ip"`
+	MAC         string       `json:"mac"`
+	Users       []IPMIUser   `json:"users"`
+}
+
+type IPMIUser struct {
+	UserID         string `json:"user_id"`
+	UserName       string `json:"user_name"`
+	PrivilegeLevel string `json:"privilege_level"`
+	Enable         string `json:"enable"`
+}
+
+
 type FullSystemInfo struct {
 	BIOS                BIOSInfo               `json:"bios"`
 	System              SysInfo                `json:"system"`
@@ -158,148 +172,155 @@ type FullSystemInfo struct {
 	SystemPowerSupplies []SystemPowerSupplyInfo `json:"system_power_supplies"`
 	OnboardDevices      []OnboardDeviceInfo    `json:"onboard_devices"`
 	RaidCardInfo        RaidCardInfo           `json:"raid_card_info"`
+	IPMI                IPMIInfo               `json:"ipmi"`
 }
 
-// runCommand runs the specified command with the given arguments and returns the output
+
 func runCommand(cmdName string, args ...string) (string, error) {
 	cmd := exec.Command(cmdName, args...)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
+	fmt.Printf("Command Output: %s\n", string(output)) // 添加调试信息
 	return strings.ReplaceAll(string(output), "\r\n", "\n"), nil
 }
 
-func parseDmidecode(output string) map[string]map[string]string {
-	result := make(map[string]map[string]string)
-	var currentSection string
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			currentSection = ""
-		} else if !strings.HasPrefix(line, "\t") {
-			currentSection = strings.TrimSpace(line)
-			result[currentSection] = make(map[string]string)
-		} else if currentSection != "" {
-			parts := strings.SplitN(strings.TrimSpace(line), ":", 2)
-			if len(parts) == 2 {
-				result[currentSection][strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-			}
-		}
+func parseDmidecode(output string) ([]map[string]interface{}, error) {
+	var result []map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		return nil, err
 	}
-	return result
+	return result, nil
+}
+
+func getStringValue(values map[string]interface{}, key string) string {
+	if val, ok := values[key].(string); ok {
+		return val
+	}
+	return ""
+}
+
+func getMapValue(entry map[string]interface{}, key string) (map[string]interface{}, bool) {
+	val, ok := entry[key].(map[string]interface{})
+	return val, ok
 }
 
 func main() {
-	var dmidecodeCmd string
+	//var dmidecodeCmd string
+	var output string
+	var err error
+	output = ""
 	if runtime.GOOS == "windows" {
-		dmidecodeCmd = "dmidecode.exe"
+		output, err = runCommand("cmd.exe", "/c", "dmidecode.exe | jc.exe --dmidecode -q")
+		if err != nil {
+			fmt.Printf("Unable to get dmidecode information. Error: %v\n", err)
+			return
+		}
 	} else {
-		dmidecodeCmd = "dmidecode"
+		output, err = runCommand("sh", "-c", "./dmidecode | ./jc --dmidecode -q")
+		if err != nil {
+			fmt.Printf("Unable to get dmidecode information. Error: %v\n", err)
+			return
+		}
 	}
 
-	output, err := runCommand(dmidecodeCmd)
+	dmiData, err := parseDmidecode(output)
 	if err != nil {
-		fmt.Printf("Unable to get dmidecode information. Error: %v\n", err)
+		fmt.Printf("Failed to parse dmidecode output. Error: %v\n", err)
 		return
 	}
 
-	dmiData := parseDmidecode(output)
 	var systemInfo FullSystemInfo
 
-	if biosData, ok := dmiData["BIOS Information"]; ok {
-		systemInfo.BIOS = BIOSInfo{
-			Vendor:      biosData["Vendor"],
-			Version:     biosData["Version"],
-			ReleaseDate: biosData["Release Date"],
+	for _, entry := range dmiData {
+		description := getStringValue(entry, "description")
+		values, ok := getMapValue(entry, "values")
+		if !ok {
+			continue
 		}
-	}
 
-	if sysData, ok := dmiData["System Information"]; ok {
-		systemInfo.System = SysInfo{
-			Manufacturer: sysData["Manufacturer"],
-			ProductName:  sysData["Product Name"],
-			Version:      sysData["Version"],
-			SerialNumber: sysData["Serial Number"],
-			UUID:         sysData["UUID"],
-			Family:       sysData["Family"],
-		}
-	}
-
-	if baseboardData, ok := dmiData["Base Board Information"]; ok {
-		systemInfo.Baseboard = BaseboardInfo{
-			Manufacturer: baseboardData["Manufacturer"],
-			ProductName:  baseboardData["Product Name"],
-			Version:      baseboardData["Version"],
-			SerialNumber: baseboardData["Serial Number"],
-			AssetTag:     baseboardData["Asset Tag"],
-		}
-	}
-
-	if chassisData, ok := dmiData["Chassis Information"]; ok {
-		systemInfo.Chassis = ChassisInfo{
-			Manufacturer: chassisData["Manufacturer"],
-			Type:         chassisData["Type"],
-			Version:      chassisData["Version"],
-			SerialNumber: chassisData["Serial Number"],
-			AssetTag:     chassisData["Asset Tag"],
-		}
-	}
-
-	for key, value := range dmiData {
-		if strings.HasPrefix(key, "Processor Information") {
+		switch description {
+		case "BIOS Information":
+			systemInfo.BIOS = BIOSInfo{
+				Vendor:      getStringValue(values, "vendor"),
+				Version:     getStringValue(values, "version"),
+				ReleaseDate: getStringValue(values, "release_date"),
+			}
+		case "System Information":
+			systemInfo.System = SysInfo{
+				Manufacturer: getStringValue(values, "manufacturer"),
+				ProductName:  getStringValue(values, "product_name"),
+				Version:      getStringValue(values, "version"),
+				SerialNumber: getStringValue(values, "serial_number"),
+				UUID:         getStringValue(values, "uuid"),
+				Family:       getStringValue(values, "family"),
+			}
+		case "Base Board Information":
+			systemInfo.Baseboard = BaseboardInfo{
+				Manufacturer: getStringValue(values, "manufacturer"),
+				ProductName:  getStringValue(values, "product_name"),
+				Version:      getStringValue(values, "version"),
+				SerialNumber: getStringValue(values, "serial_number"),
+				AssetTag:     getStringValue(values, "asset_tag"),
+			}
+		case "Chassis Information":
+			systemInfo.Chassis = ChassisInfo{
+				Manufacturer: getStringValue(values, "manufacturer"),
+				Type:         getStringValue(values, "type"),
+				Version:      getStringValue(values, "version"),
+				SerialNumber: getStringValue(values, "serial_number"),
+				AssetTag:     getStringValue(values, "asset_tag"),
+			}
+		case "Processor Information":
 			processor := ProcessorInfo{
-				Family:       value["Family"],
-				Manufacturer: value["Manufacturer"],
-				Version:      value["Version"],
-				Frequency:    value["Max Speed"],
-				Cores:        value["Core Count"],
-				Threads:      value["Thread Count"],
+				Family:       getStringValue(values, "family"),
+				Manufacturer: getStringValue(values, "manufacturer"),
+				Version:      getStringValue(values, "version"),
+				Frequency:    getStringValue(values, "current_speed"),
+				Cores:        getStringValue(values, "core_count"),
+				Threads:      getStringValue(values, "thread_count"),
 			}
 			systemInfo.Processors = append(systemInfo.Processors, processor)
-		}
-		if strings.HasPrefix(key, "Memory Device") {
+		case "Memory Device":
 			memory := MemoryInfo{
-				Model:     value["Part Number"],
-				Size:      value["Size"],
-				Speed:     value["Speed"],
-				Slot:      value["Locator"],
+				Model:     getStringValue(values, "part_number"),
+				Size:      getStringValue(values, "size"),
+				Speed:     getStringValue(values, "speed"),
+				Slot:      getStringValue(values, "locator"),
 			}
 			systemInfo.Memory = append(systemInfo.Memory, memory)
-		}
-		if strings.HasPrefix(key, "System Slot") {
+		case "System Slot Information":
 			slot := SystemSlotInfo{
-				Type:        value["Type"],
-				Usage:       value["Current Usage"],
-				Status:      value["Slot Status"],
-				BusAddress:  value["Bus Address"],
-				Designation: value["Designation"],
+				Type:        getStringValue(values, "type"),
+				Usage:       getStringValue(values, "current_usage"),
+				Status:      getStringValue(values, "status"),
+				BusAddress:  getStringValue(values, "bus_address"),
+				Designation: getStringValue(values, "designation"),
 			}
 			systemInfo.SystemSlots = append(systemInfo.SystemSlots, slot)
-		}
-		if strings.HasPrefix(key, "System Power Supply") {
+		case "System Power Supply":
 			powerSupply := SystemPowerSupplyInfo{
-				PowerUnitGroup:     value["Power Unit Group"],
-				Location:           value["Location"],
-				Name:               value["Name"],
-				Manufacturer:       value["Manufacturer"],
-				AssetTag:           value["Asset Tag"],
-				ModelPartNumber:    value["Model Part Number"],
-				MaxPowerCapacity:   value["Max Power Capacity"],
-				Status:             value["Status"],
-				Type:               value["Type"],
-				Plugged:            value["Plugged"],
-				HotReplaceable:     value["Hot Replaceable"],
-				CoolingDeviceHandle: value["Cooling Device Handle"],
+				PowerUnitGroup:     getStringValue(values, "power_unit_group"),
+				Location:           getStringValue(values, "location"),
+				Name:               getStringValue(values, "name"),
+				Manufacturer:       getStringValue(values, "manufacturer"),
+				AssetTag:           getStringValue(values, "asset_tag"),
+				ModelPartNumber:    getStringValue(values, "model_part_number"),
+				MaxPowerCapacity:   getStringValue(values, "max_power_capacity"),
+				Status:             getStringValue(values, "status"),
+				Type:               getStringValue(values, "type"),
+				Plugged:            getStringValue(values, "plugged"),
+				HotReplaceable:     getStringValue(values, "hot_replaceable"),
+				CoolingDeviceHandle: getStringValue(values, "cooling_device_handle"),
 			}
 			systemInfo.SystemPowerSupplies = append(systemInfo.SystemPowerSupplies, powerSupply)
-		}
-		if strings.HasPrefix(key, "On Board Device") {
+		case "Onboard Device":
 			onboardDevice := OnboardDeviceInfo{
-				ReferenceDesignation: value["Reference Designation"],
-				Type:                 value["Type"],
-				Status:               value["Status"],
-				TypeInstance:         value["Type Instance"],
+				ReferenceDesignation: getStringValue(values, "reference_designation"),
+				Type:                 getStringValue(values, "type"),
+				Status:               getStringValue(values, "status"),
+				TypeInstance:         getStringValue(values, "type_instance"),
 			}
 			systemInfo.OnboardDevices = append(systemInfo.OnboardDevices, onboardDevice)
 		}
@@ -309,17 +330,37 @@ func main() {
 		fmt.Printf("Failed to get RAID information: %v\n", err)
 	}
 
+	if err := getIPMIInfo(&systemInfo); err != nil {
+		fmt.Printf("Failed to get IPMI information: %v\n", err)
+	}
+
 	jsonData, err := json.MarshalIndent(systemInfo, "", "  ")
 	if err != nil {
 		log.Fatalf("Failed to convert system information to JSON: %v", err)
 	}
 
+
 	fmt.Println(string(jsonData))
+
+	// 创建文件名
+	filename := fmt.Sprintf("%s_%s_%s.txt",
+		strings.ReplaceAll(systemInfo.System.Manufacturer, " ", "_"),
+		strings.ReplaceAll(systemInfo.System.ProductName, " ", "_"),
+		strings.ReplaceAll(systemInfo.System.SerialNumber, " ", "_"))
+
+	// 写入到文件
+	err = os.WriteFile(filename, jsonData, 0644)
+	if err != nil {
+		log.Fatalf("Failed to write JSON data to file: %v", err)
+	}
+
+	fmt.Printf("System information has been written to %s\n", filename)
 }
+
 
 // getRaidInfo uses storcli to gather RAID and disk information
 func getRaidInfo(systemInfo *FullSystemInfo) error {
-	storcliCmd := "storcli"
+	storcliCmd := "./storcli"
 	if runtime.GOOS == "windows" {
 		storcliCmd = "storcli.exe"
 	}
@@ -439,3 +480,69 @@ func getRaidInfo(systemInfo *FullSystemInfo) error {
 
 	return nil
 }
+
+func getIPMIInfo(systemInfo *FullSystemInfo) error {
+	ipmiCmd, err := getIPMICmdPath()
+	if err != nil {
+		return fmt.Errorf("failed to get IPMI command path: %v", err)
+	}
+
+	// Get IP and MAC address
+	ipOutput, err := runCommand(ipmiCmd, "-m")
+	if err != nil {
+		return fmt.Errorf("failed to get IPMI IP and MAC address: %v", err)
+	}
+	fmt.Printf("IPMI IP and MAC output: %s\n", ipOutput) // 添加调试信息
+
+	ipmiInfo := IPMIInfo{}
+	for _, line := range strings.Split(ipOutput, "\n") {
+		if strings.HasPrefix(line, "IP=") {
+			ipmiInfo.IP = strings.TrimSpace(strings.Split(line, "=")[1])
+		} else if strings.HasPrefix(line, "MAC=") {
+			ipmiInfo.MAC = strings.TrimSpace(strings.Split(line, "=")[1])
+		}
+	}
+
+	// Get user list
+	userOutput, err := runCommand(ipmiCmd, "-user", "list")
+	if err != nil {
+		return fmt.Errorf("failed to get IPMI user list: %v", err)
+	}
+	fmt.Printf("IPMI User List output: %s\n", userOutput) // 添加调试信息
+
+	users := []IPMIUser{}
+	for _, line := range strings.Split(userOutput, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "User ID") || strings.HasPrefix(line, "-------") || strings.HasPrefix(line, "Maximum") || strings.HasPrefix(line, "Count") || line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) != 4 {
+			continue
+		}
+		user := IPMIUser{
+			UserID:         strings.TrimSpace(parts[0]),
+			UserName:       strings.TrimSpace(parts[1]),
+			PrivilegeLevel: strings.TrimSpace(parts[2]),
+			Enable:         strings.TrimSpace(parts[3]),
+		}
+		users = append(users, user)
+	}
+	ipmiInfo.Users = users
+	systemInfo.IPMI = ipmiInfo
+
+	return nil
+}
+
+// 获取当前工作目录并构建ipmicfg.exe的绝对路径
+func getIPMICmdPath() (string, error) {
+	if runtime.GOOS == "windows" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s\\ipmicfg.exe", wd), nil
+	}
+	return "./ipmicfg", nil
+}
+
