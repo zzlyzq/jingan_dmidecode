@@ -1,0 +1,1 @@
+# jingan_dmidecode
