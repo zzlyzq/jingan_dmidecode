@@ -11,6 +11,7 @@ Before you run the utility, ensure that you have the following installed on your
 - `ipmicfg` or equivalent IPMI tool supported by your hardware.
 ## Getting Started
 To get started with this tool, clone the repository to your local machine:
+
 ```bash
 git clone <https://github.com/your-username/system-info-raid-utility.git>
 cd system-info-raid-utility
@@ -19,14 +20,16 @@ To run the utility and display the system information, use the following command
 
 go run main.go
 Ensure that the storcli and ipmi tools are in your system's PATH or modify the utility to point to their locations.
+```
 
-Contributing
+# Contributing
 Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are greatly appreciated.
 
-Fork the Project
+# Fork the Project
 Create your Feature Branch (git checkout -b feature/AmazingFeature)
 Commit your Changes (git commit -m 'Add some AmazingFeature')
 Push to the Branch (git push origin feature/AmazingFeature)
 Open a Pull Request
-License
+
+# License
 Distributed under the MIT License. See LICENSE for more information.
